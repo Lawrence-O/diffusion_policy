@@ -291,7 +291,11 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                     json_logger.log(step_log)
                 self.global_step += 1
                 self.epoch += 1
-        self.accelerator.end_training()
+        # Older accelerate releases expose end_training() but do not create
+        # ``trackers`` when logging is disabled.  In that configuration the
+        # training run is already complete, so avoid crashing during cleanup.
+        if hasattr(self.accelerator, "trackers"):
+            self.accelerator.end_training()
 
 @hydra.main(
     version_base=None,
