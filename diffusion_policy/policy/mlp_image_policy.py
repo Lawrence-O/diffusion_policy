@@ -76,7 +76,16 @@ class MLPImagePolicy(BaseImagePolicy):
         log_std = self.log_std_head(h).clamp(min=self.log_std_limits[0], max=self.log_std_limits[1])
         return Normal(mean, torch.exp(log_std))
 
-    def forward(self, obs_features: torch.Tensor) -> Normal:
+    def forward(self, obs_features: Union[torch.Tensor, Dict[str, torch.Tensor]]) -> Union[Normal, Dict[str, torch.Tensor]]:
+        """Run the action head, or the complete loss path when DDP trains us.
+
+        Calling ``compute_loss`` directly on an unwrapped model bypasses
+        DistributedDataParallel's gradient synchronization.  Letting a batch
+        enter through ``forward`` keeps the normal action-distribution API and
+        gives the training workspace a DDP-safe loss entry point.
+        """
+        if isinstance(obs_features, dict):
+            return self.compute_loss(obs_features)
         return self.get_action_dist(self.get_trunk_features(obs_features))
 
     def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
