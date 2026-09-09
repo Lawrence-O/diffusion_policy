@@ -175,7 +175,9 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                             train_sampling_batch = batch
 
                         # compute loss
-                        loss_output = self.accelerator.unwrap_model(self.model).compute_loss(batch)
+                        # Call the prepared model, rather than the unwrapped
+                        # module, so DDP synchronizes gradients across ranks.
+                        loss_output = self.model(batch)
                         if isinstance(loss_output, dict):
                             raw_loss = loss_output['loss']
                         else:
