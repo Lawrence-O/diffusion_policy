@@ -32,6 +32,16 @@ from diffusion_policy.model.common.lr_scheduler import get_scheduler
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
+
+def _stack_diagnostic_samples(samples):
+    """Stack a small forced-index batch for diagnostic-only evaluation."""
+    if isinstance(samples[0], dict):
+        return {
+            key: _stack_diagnostic_samples([sample[key] for sample in samples])
+            for key in samples[0]
+        }
+    return torch.stack(samples)
+
 class TrainMLPImageWorkspace(BaseWorkspace):
     include_keys = ['global_step', 'epoch', 'last_checkpoint_step']
 
@@ -160,6 +170,12 @@ class TrainMLPImageWorkspace(BaseWorkspace):
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
         with JsonLogger(log_path) as json_logger:
             for local_epoch_idx in range(cfg.training.num_epochs):
+                # ``max_train_steps`` is a global optimizer-step limit.  The
+                # old check used ``batch_idx`` below, which reset at every
+                # epoch and could let a diagnostic run continue indefinitely.
+                if (cfg.training.max_train_steps is not None
+                        and self.global_step >= cfg.training.max_train_steps):
+                    break
                 step_log = dict()
                 # ========= train for this epoch ==========
                 if cfg.training.freeze_encoder:
@@ -232,7 +248,7 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                                 self.last_checkpoint_step = self.global_step
 
                         if (cfg.training.max_train_steps is not None) \
-                            and batch_idx >= (cfg.training.max_train_steps-1):
+                            and self.global_step >= cfg.training.max_train_steps:
                             break
 
                 # at the end of each epoch
@@ -249,7 +265,8 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                     step_log.update(runner_log)
 
                 # run validation
-                if (self.epoch % cfg.training.val_every) == 0:
+                forced_index_diagnostic = getattr(dataset, "forced_indices", None) is not None
+                if forced_index_diagnostic or (self.epoch % cfg.training.val_every) == 0:
                     with torch.no_grad():
                         val_losses = list()
                         with tqdm.tqdm(val_dataloader, desc=f"Validation epoch {self.epoch}", 
@@ -269,10 +286,31 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                             step_log['val_loss'] = val_loss
 
                 # run sampling on a training batch
-                if (self.epoch % cfg.training.sample_every) == 0:
+                if forced_index_diagnostic or (self.epoch % cfg.training.sample_every) == 0:
                     with torch.no_grad():
-                        # sample trajectory from training set, and evaluate difference
-                        batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
+                        # Production runs retain the historical first-batch
+                        # diagnostic. Forced-index overfit runs evaluate every
+                        # requested window so this is a trajectory-level
+                        # measurement rather than one random batch.
+                        forced_indices = getattr(dataset, "forced_indices", None)
+                        if forced_indices is not None:
+                            diagnostic_samples = [
+                                dataset[index] for index in forced_indices
+                            ]
+                            batch = _stack_diagnostic_samples(diagnostic_samples)
+                            batch = dict_apply(
+                                batch, lambda x: x.to(device, non_blocking=True)
+                            )
+                            print(
+                                "[diagnostic] action MSE uses all forced windows: "
+                                f"{len(diagnostic_samples)}",
+                                flush=True,
+                            )
+                        else:
+                            batch = dict_apply(
+                                train_sampling_batch,
+                                lambda x: x.to(device, non_blocking=True),
+                            )
                         obs_dict = batch['obs']
                         gt_action = batch['action'][:, policy.n_obs_steps-1]
                         result = policy.predict_action(obs_dict)
