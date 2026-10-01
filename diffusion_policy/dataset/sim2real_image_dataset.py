@@ -710,6 +710,8 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
         use_streaming: bool = False,
         samples_per_file_multiplier: float = 1.0,
         action_norm_mode: str = "limits",
+        forced_indices: list[int] | None = None,
+        force_validation_to_train: bool = False,
     ):
         super().__init__()
 
@@ -752,6 +754,11 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
 
         # Use streaming implementation if requested
         if use_streaming:
+            if forced_indices:
+                raise ValueError(
+                    "forced_indices is a diagnostic option and is not supported "
+                    "with use_streaming=True"
+                )
             self.streaming_dataset = StreamingMultiDataset(
                 file_paths=file_paths,
                 dataset_dir=None,  # Already resolved to file_paths above
@@ -773,6 +780,10 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
 
         # Fall back to original implementation
         self.is_streaming = False
+        # Diagnostic-only index remapping.  The production default (None) leaves
+        # the existing sampler and indexing behavior completely unchanged.
+        self.forced_indices = forced_indices
+        self.force_validation_to_train = force_validation_to_train
         self.dataset_config = dataset_config or [
             {'dataset_path': path, 'sampling_ratio': 1.0} 
             for path in file_paths]
@@ -814,6 +825,20 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
         self.cumulative_lengths = np.cumsum([0] + self.dataset_lengths)
         self.total_length = int(self.cumulative_lengths[-1])
 
+        if self.forced_indices is not None:
+            self.forced_indices = tuple(int(index) for index in self.forced_indices)
+            if not self.forced_indices:
+                raise ValueError("forced_indices must contain at least one index")
+            invalid_indices = [
+                index for index in self.forced_indices
+                if index < 0 or index >= self.total_length
+            ]
+            if invalid_indices:
+                raise IndexError(
+                    "forced_indices must be valid global dataset indices "
+                    f"in [0, {self.total_length}); got {invalid_indices[:8]}"
+                )
+
         # Calculate sampling weights
         self.weights = self._calculate_weights()
 
@@ -849,6 +874,12 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
         """Create validation version of this multi-dataset wrapper."""
         if self.is_streaming:
             return self.streaming_dataset.get_validation_dataset()
+
+        # This opt-in diagnostic makes validation exercise the exact same
+        # samples as training.  It is deliberately separate from normal
+        # validation behavior so production training stays unchanged.
+        if self.force_validation_to_train:
+            return copy.copy(self)
 
         val_wrapper = copy.copy(self)
         val_wrapper.datasets = [
@@ -948,7 +979,12 @@ class Sim2RealImageMultiDataset(BaseImageDataset):
         if self.is_streaming:
             return self.streaming_dataset[idx]
 
-        # For direct indexing, use the provided index
+        # Keep the standard DataLoader/sampler path, but optionally remap its
+        # requested index through a fixed cycle for an overfit diagnostic.
+        if self.forced_indices is not None:
+            idx = self.forced_indices[idx % len(self.forced_indices)]
+
+        # For direct indexing, use the provided (or diagnostic-remapped) index.
         dataset_idx, local_idx = self._global_to_local_index(idx)
         return self.datasets[dataset_idx][local_idx]
 
