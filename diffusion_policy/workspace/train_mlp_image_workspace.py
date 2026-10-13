@@ -295,7 +295,7 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                         forced_indices = getattr(dataset, "forced_indices", None)
                         if forced_indices is not None:
                             diagnostic_samples = [
-                                dataset[index] for index in forced_indices
+                                dataset[index] for index in range(len(forced_indices))
                             ]
                             batch = _stack_diagnostic_samples(diagnostic_samples)
                             batch = dict_apply(
@@ -317,6 +317,17 @@ class TrainMLPImageWorkspace(BaseWorkspace):
                         pred_action = result['action']
                         mse = torch.nn.functional.mse_loss(pred_action, gt_action)
                         step_log['train_action_mse_error'] = mse.item()
+                        if forced_index_diagnostic:
+                            normalized_target = policy.normalizer['action'].normalize(gt_action)
+                            step_log['train_action_mse_normalized'] = torch.nn.functional.mse_loss(
+                                result['action_pred'], normalized_target
+                            ).item()
+                            per_dimension = (pred_action - gt_action).square().mean(dim=0)
+                            for index, value in enumerate(per_dimension):
+                                step_log[f'train_action_mse_dim_{index}'] = value.item()
+                            step_log['train_gripper_sign_accuracy'] = (
+                                pred_action[:, -1].sign() == gt_action[:, -1].sign()
+                            ).float().mean().item()
                         del batch
                         del obs_dict
                         del gt_action

@@ -10,7 +10,9 @@ task_name: ${task.name}
 shape_meta: ${task.shape_meta}
 exp_name: "default"
 
-horizon: 8
+# This policy emits one action at the last observation. Unused future slots
+# would drop the final action targets from every recorded episode.
+horizon: ${n_obs_steps}
 n_obs_steps: 4
 n_action_steps: 1
 n_latency_steps: 0
