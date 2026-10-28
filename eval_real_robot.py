@@ -126,14 +126,37 @@ def compute_calibrated_ee_pose(joint_positions):
                    'Sim uses 25.0 on joint wrench; real F/T sensor differs.')
 @click.option('--collect_sysid', default=None, type=str,
               help='Save on-policy sysid data to .pt file (joint traj + OSC targets)')
+@click.option('--agent_config', default=None, type=click.Path(exists=True), help='Training agent.yaml; defaults to checkpoint-adjacent params/agent.yaml.')
+@click.option('--teacher_jit', default=None, type=click.Path(exists=True), help='Matching teacher artifact needed to construct the native RGB student; not used for inference.')
+@click.option('--policy_format', type=click.Choice(['workspace', 'uwlab_jit', 'uwlab_checkpoint']), default='workspace',
+              help='workspace preserves the original loader; uwlab_jit loads the checked Task043 mean policy.')
+@click.option('--controller_profile', type=click.Choice(['stage1_soft', 'stage2']), default=None,
+              help='Required explicitly for uwlab_jit. Numeric settings are not proof of sim/real equivalence.')
+@click.option('--automatic_gripper_release/--no-automatic_gripper_release', default=None,
+              help='Explicitly select the existing stalling-triggered gripper override for uwlab_jit.')
 def main(input, output, robot_ip, match_dataset, match_episode,
          vis_camera_idx, init_joints, 
          steps_per_inference, max_duration,
          frequency, save_video, action_noise, contact_threshold,
-         collect_sysid):
-    # Per-axis Cartesian scale matching simulation DiffIK config
-    CARTESIAN_SCALE = np.array([0.01, 0.01, 0.002, 0.02, 0.02, 0.2])
+         collect_sysid, policy_format, controller_profile, automatic_gripper_release, agent_config, teacher_jit):
+    if policy_format in ('uwlab_jit', 'uwlab_checkpoint'):
+        if controller_profile is None or automatic_gripper_release is None:
+            raise click.UsageError('uwlab_jit requires --controller_profile and an explicit '
+                                   '--automatic_gripper_release/--no-automatic_gripper_release choice')
+        if frequency != 10 or steps_per_inference != 1 or action_noise != 0:
+            raise click.UsageError('Checked Task043 JIT requires10Hz, one inference step and zero added action noise')
+    controller_profile = controller_profile or 'stage2'
+    automatic_gripper_release = True if automatic_gripper_release is None else automatic_gripper_release
+    soft = controller_profile == 'stage1_soft'
+    CARTESIAN_SCALE = np.array([0.02, 0.02, 0.02, 0.02, 0.02, 0.2] if soft
+                               else [0.01, 0.01, 0.002, 0.02, 0.02, 0.2])
+    osc_settings = dict(osc_kp_pos=200.0 if soft else 1000.0,
+                        osc_kp_rot=3.0 if soft else 50.0,
+                        osc_damping_ratio_pos=3.0 if soft else 1.0,
+                        osc_damping_ratio_rot=1.0)
     print(f"Cartesian OSC scale: {CARTESIAN_SCALE}")
+    print(f'Policy format={policy_format}; controller={controller_profile}; '
+          f'automatic gripper release={automatic_gripper_release}; OSC={osc_settings}')
 
     # Sysid data collection state
     sysid_records = []  # list of (joint_pos, target_pos, target_quat)
@@ -184,19 +207,24 @@ def main(input, output, robot_ip, match_dataset, match_episode,
     ]
 
     ckpt_path = input
-    payload = torch.load(open(ckpt_path, 'rb'), pickle_module=dill)
-    cfg = payload['cfg']
-    cls = hydra.utils.get_class(cfg._target_)
-    cfg['policy']['obs_encoder']['extra_randomizations'] = []
-    workspace = cls(cfg)
-    workspace: BaseWorkspace
-    workspace.load_payload(payload, exclude_keys=None, include_keys=None)
-
-    # hacks for method-specific setup.
-    policy: BaseImagePolicy
-    policy = workspace.model
-    if cfg.training.use_ema:
-        policy = workspace.ema_model
+    if policy_format in ('uwlab_jit', 'uwlab_checkpoint'):
+        from diffusion_policy.real_world.uwlab_jit_policy import UWLabJITPolicy, UWLabCheckpointPolicy, SHAPE_META
+        policy = (UWLabJITPolicy(ckpt_path, device=device) if policy_format == 'uwlab_jit'
+                  else UWLabCheckpointPolicy(ckpt_path, device=device, agent_config=agent_config, teacher_jit=teacher_jit))
+        cfg = OmegaConf.create(dict(shape_meta=SHAPE_META, task={'shape_meta': SHAPE_META},
+                                    n_obs_steps=1, n_action_steps=1))
+    else:
+        payload = torch.load(open(ckpt_path, 'rb'), pickle_module=dill)
+        cfg = payload['cfg']
+        cls = hydra.utils.get_class(cfg._target_)
+        cfg['policy']['obs_encoder']['extra_randomizations'] = []
+        workspace = cls(cfg)
+        workspace: BaseWorkspace
+        workspace.load_payload(payload, exclude_keys=None, include_keys=None)
+        policy: BaseImagePolicy
+        policy = workspace.model
+        if cfg.training.use_ema:
+            policy = workspace.ema_model
 
     policy.eval().to(device)
 
@@ -230,6 +258,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
             camera_serial_numbers=['215122255213', '832112070487',
                                   '746112060198'],
             camera_configs=configs,
+            **osc_settings,
             # number of threads per camera view for video recording (H.264)
             thread_per_video=3,
             # video recording quality, lower is better (but slower).
@@ -260,6 +289,8 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                     action = result['action'][0].detach().to('cpu').numpy()
                     del result
                 except Exception as e:
+                    if policy_format in ('uwlab_jit', 'uwlab_checkpoint'):
+                        raise  # Do not enable policy control after failed JIT warmup.
                     print(e)
                     # Handle case where result might not be defined
                     if 'result' in locals():
@@ -356,7 +387,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         gripper_actions = action[:, 6:7]
 
                         # Stuck detection: if robot barely moved for STUCK_WINDOW_S, open gripper to get unstuck
-                        if gripper_open_steps_remaining == 0:
+                        if automatic_gripper_release and gripper_open_steps_remaining == 0:
                             t_now = time.monotonic()
                             stuck_buffer.append((t_now, obs['arm_joint_pos'][-1].copy()))
                             # keep only last STUCK_WINDOW_S
