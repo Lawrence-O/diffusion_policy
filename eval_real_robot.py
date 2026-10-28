@@ -127,7 +127,7 @@ def compute_calibrated_ee_pose(joint_positions):
 @click.option('--collect_sysid', default=None, type=str,
               help='Save on-policy sysid data to .pt file (joint traj + OSC targets)')
 @click.option('--agent_config', default=None, type=click.Path(exists=True), help='Training agent.yaml; defaults to checkpoint-adjacent params/agent.yaml.')
-@click.option('--teacher_jit', default=None, type=click.Path(exists=True), help='Matching teacher artifact needed to construct the native RGB student; not used for inference.')
+@click.option('--teacher_jit', default=None, type=click.Path(exists=True), help='Deprecated compatibility option; student-only loading does not use a teacher.')
 @click.option('--policy_format', type=click.Choice(['workspace', 'uwlab_jit', 'uwlab_checkpoint']), default='workspace',
               help='workspace preserves the original loader; uwlab_jit loads the checked Task043 mean policy.')
 @click.option('--controller_profile', type=click.Choice(['stage1_soft', 'stage2']), default=None,

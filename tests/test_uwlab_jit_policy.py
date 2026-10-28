@@ -64,7 +64,8 @@ def test_training_checkpoint_recorded_trajectory_parity():
     torch.set_num_threads(4)
     device=os.environ.get('UWLAB_REPLAY_DEVICE','cpu')
     native=UWLabCheckpointPolicy(here/'inputs/model_update_600000.pt',device=device,
-        teacher_jit=root/'artifacts/task043/continuation_teacher_assets/weighted_teacher.pt')
+        teacher_jit='/deliberately/missing/teacher.pt')
+    assert not any('teacher' in key for key in native.model.state_dict())
     jit=UWLabJITPolicy(here/'checked_student_mean.pt',device=device)
     rows=torch.load(trace,map_location='cpu',weights_only=False)
     jit_error=recorded_error=0.

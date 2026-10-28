@@ -50,29 +50,11 @@ class UWLabJITPolicy(torch.nn.Module):
         return {'action': action}
 
 
-class _NativeVisionMean(torch.nn.Module):
-    def __init__(self, policy):
-        super().__init__()
-        self.policy = policy
-
-    def forward(self, proprio, images):
-        from tensordict import TensorDict
-        obs = TensorDict({'policy': proprio,
-                          **dict(zip(VISION_GROUPS, images))}, batch_size=[len(proprio)])
-        return self.policy.act_inference(obs)
-
-
 class UWLabCheckpointPolicy(UWLabJITPolicy):
-    """Load trusted Task043 training checkpoints through their native model class.
-
-    The teacher artifact is required by that class's constructor, but is never
-    used to produce deployment actions. Optimizer state is not restored.
-    """
+    """Load only the trained RGB student's inference modules; never load a teacher."""
     def __init__(self, checkpoint, device='cpu', agent_config=None, teacher_jit=None):
         torch.nn.Module.__init__(self)
         import yaml
-        from tensordict import TensorDict
-        from rsl_rl.modules.student_teacher_vision import StudentTeacherVision
         checkpoint = Path(checkpoint)
         config_path = Path(agent_config) if agent_config else checkpoint.parent / 'params/agent.yaml'
         config = yaml.safe_load(config_path.read_text())
@@ -81,15 +63,41 @@ class UWLabCheckpointPolicy(UWLabJITPolicy):
             raise ValueError('Only Task043 StudentTeacherVision RGB checkpoints are supported')
         if options['vision_groups'] != list(VISION_GROUPS):
             raise ValueError('Checkpoint camera order does not match the deployment interface')
-        teacher = Path(teacher_jit or options['teacher_jit_path'])
-        if not teacher.is_file():
-            raise ValueError('Supply the matching accessible --teacher_jit artifact for model construction')
-        options.update(teacher_jit_path=str(teacher), encoder_pretrained_path='')
-        obs = TensorDict({'policy': torch.zeros(1, 19), 'teacher': torch.zeros(1, 215),
-                          **{k: torch.zeros(1, 3, 224, 224) for k in VISION_GROUPS}}, batch_size=[1])
-        policy = StudentTeacherVision(obs, config['obs_groups'], 7, **options)
+        if options.get('encoder_type') != 'resnet18' or config['obs_groups']['policy'] != ['policy']:
+            raise ValueError('Student-only loader supports the single-frame Task043 ResNet18 interface')
         # torch.load may execute pickle code: only use trusted training files.
         saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
-        policy.load_state_dict(saved['model_state_dict'], strict=True)
-        self.model = _NativeVisionMean(policy).to(device).eval()
+        self.model = _StudentOnlyMean(options)
+        state = saved['model_state_dict']
+        expected = self.model.state_dict()
+        allowed_unused = ('teacher.', 'teacher_obs_normalizer.', 'std_head.', 'aux_heads.')
+        unknown = [k for k in state if k not in expected and k not in ('std', 'log_std')
+                   and not k.startswith(allowed_unused)]
+        if unknown:
+            raise ValueError(f'Unsupported checkpoint fields: {unknown}')
+        self.model.load_state_dict({k: v for k, v in state.items() if k in expected}, strict=True)
+        self.model.to(device).eval()
         self.eval()
+
+
+class _StudentOnlyMean(torch.nn.Module):
+    def __init__(self, options):
+        super().__init__()
+        from rsl_rl.modules.student_teacher_vision import ResNet18Encoder
+        from rsl_rl.networks import MLP, EmpiricalNormalization
+        embed = options.get('embed_dim', 128)
+        self.encoders = torch.nn.ModuleDict({key: ResNet18Encoder(
+            3, embed_dim=embed, pretrained_path='',
+            projection_activation=options.get('projection_activation', 'relu')) for key in VISION_GROUPS})
+        # Preserve the training state's alias keys so strict loading checks them too.
+        self.depth_encoder = self.encoders[VISION_GROUPS[0]]
+        self.student_obs_normalizer = (EmpiricalNormalization(19)
+            if options.get('student_obs_normalization', True) else torch.nn.Identity())
+        self.student = MLP(19 + 3 * embed, 7, options['student_hidden_dims'], options['activation'])
+        self.squash_student = options.get('squash_student', False)
+
+    def forward(self, proprio, images):
+        features = [self.student_obs_normalizer(proprio)]
+        features.extend(self.encoders[key](image) for key, image in zip(VISION_GROUPS, images))
+        action = self.student(torch.cat(features, dim=-1))
+        return torch.tanh(action) if self.squash_student else action

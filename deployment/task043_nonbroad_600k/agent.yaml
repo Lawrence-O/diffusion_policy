@@ -1,0 +1,136 @@
+seed: 42
+device: cuda:0
+num_steps_per_env: 1
+max_iterations: 200000
+empirical_normalization: {}
+obs_groups:
+  policy:
+  - policy
+  teacher:
+  - teacher
+clip_actions: null
+check_for_nan: true
+save_interval: 100
+experiment_name: cube_rgb_dagger_weighted
+run_name: task043_three_camera_relu_weighted_fixed50_32env_600k_seed42_continuation_v4
+logger: wandb
+neptune_project: adversarial_distillation_law
+wandb_project: adversarial_distillation_law
+resume: true
+load_run: .*
+load_checkpoint: model_.*.pt
+class_name: DistillationRunnerSplit
+actor: {}
+critic: {}
+algorithm:
+  class_name: DistillationDAggerWeighted
+  num_learning_epochs: 1
+  gradient_length: 1
+  learning_rate: 0.0001
+  max_grad_norm: 1.0
+  loss_type: mse
+  optimizer: adam
+  beta_anneal_iters: 20000
+  beta_warmup_updates: 5000
+  beta_final: 0.0
+  teacher_sample: false
+  max_rollout_storage_bytes: 536870912
+  diagnostics_enabled: true
+policy:
+  class_name: StudentTeacherVision
+  teacher_jit_path: /workspace/task034_shared_assets/task021v4/weighted_teacher.pt
+  vision_groups:
+  - side_rgb
+  - wrist_rgb
+  - front_rgb
+  embed_dim: 128
+  student_hidden_dims:
+  - 512
+  - 512
+  - 512
+  - 512
+  activation: elu
+  init_noise_std: 0.1
+  noise_std_type: scalar
+  student_obs_normalization: true
+  student_normalization_mode: source
+  encoder_type: resnet18
+  projection_activation: relu
+  encoder_pretrained_path: /workspace/task034_shared_assets/resnet18-f37072fd.pth
+  predict_std: true
+  teacher_returns_std: true
+  aux_enabled: false
+student_fraction: 0.5
+eval_fraction: 0.125
+teacher_eval_fraction: 0.0
+mixing_mode: split
+diagnostics_interval: 10
+diagnostics_enabled: true
+save_completed_updates:
+- 425000
+- 450000
+- 475000
+- 500000
+- 525000
+- 550000
+- 575000
+- 600000
+evaluation_interval: 0
+evaluation_updates:
+- 400000
+- 425000
+- 450000
+- 475000
+- 500000
+- 525000
+- 550000
+- 575000
+- 600000
+evaluation_action_mode: sampled
+teacher_contract_path: /workspace/task034_shared_assets/task021v4/weighted_contract.json
+experiment_integrity:
+  run_id: fc5c8a57-b77b-4367-9b9b-2fd572350656
+  parent:
+    checkpoint_sha256: 842ee3af6cdf7c10a880ff3a92ebc317ef7faa9edf3653a2fcd3fd88146c70ee
+    provenance:
+      run_id: c65094e0-9d47-4f18-b8fb-46ca988015b9
+      parent:
+        checkpoint_sha256: 40e26934fe5ff7d12579296ef01afdd8a52f4c267212c4359ca18ffa19aca945
+        provenance:
+          run_id: 2667cdea-1e48-4208-b009-5727ad7a9336
+          parent:
+            checkpoint_sha256: null
+            provenance: null
+          contract:
+            architecture: ur5e-implicit-v1
+            control: 4b106c4471268272dcd8005bf54e1b5df7415ac97ffa7d02df9d2b34e5432009
+            nominal: startup-mass-material-reset-gripper-v1
+            io: 83599f48452197614a0a143f811a79e4d2020cf09f732c039bc1ec5162da75b4
+            model: ef32a1b3380bb8f11105d1a2509e2786569df2224c48a822b6303553c56eda7e
+            dt: 0.1
+            asset_sha256: 88e72878dc44065c12a73f60bc791f2fc8f8fee4178a44ad11b4f8bc49cd5378
+          manifest_sha256: 7cfef7384e6f1605bd093d3a69adc390bd07e1a0ba810e4f2b84d53cd554dc31
+          manifest_ref: integrity/index.json
+          restart: fresh_bootstrap
+      contract:
+        architecture: ur5e-implicit-v1
+        control: 4b106c4471268272dcd8005bf54e1b5df7415ac97ffa7d02df9d2b34e5432009
+        nominal: startup-mass-material-reset-gripper-v1
+        io: 83599f48452197614a0a143f811a79e4d2020cf09f732c039bc1ec5162da75b4
+        model: ef32a1b3380bb8f11105d1a2509e2786569df2224c48a822b6303553c56eda7e
+        dt: 0.1
+        asset_sha256: 88e72878dc44065c12a73f60bc791f2fc8f8fee4178a44ad11b4f8bc49cd5378
+      manifest_sha256: 4f3c845fe9b838f3d44bb5384c71946c52fd214bb2bab2e6891e094646f226f6
+      manifest_ref: integrity/index.json
+      restart: fresh_bootstrap
+  contract:
+    architecture: ur5e-implicit-v1
+    control: 4b106c4471268272dcd8005bf54e1b5df7415ac97ffa7d02df9d2b34e5432009
+    nominal: startup-mass-material-reset-gripper-v1
+    io: 83599f48452197614a0a143f811a79e4d2020cf09f732c039bc1ec5162da75b4
+    model: ef32a1b3380bb8f11105d1a2509e2786569df2224c48a822b6303553c56eda7e
+    dt: 0.1
+    asset_sha256: 88e72878dc44065c12a73f60bc791f2fc8f8fee4178a44ad11b4f8bc49cd5378
+  manifest_sha256: d8c690c33e6b424d37702aa9b73198593693219a9a89d91f170d218ac5a2f387
+  manifest_ref: integrity/index.json
+  restart: fresh_bootstrap
